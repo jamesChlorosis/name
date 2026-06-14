@@ -5,6 +5,7 @@ import {
   PLATFORMS,
   type PlatformId,
   type Status,
+  getProfileUrl,
   makeSuggestions,
   validateUsername,
 } from './platforms'
@@ -14,6 +15,7 @@ type CheckCell = {
   detail: string
   normalized: string
   suggestions: string[]
+  url?: string
   checkedAt?: string
 }
 
@@ -21,6 +23,17 @@ type ApiCheckResponse = {
   status: Status
   detail: string
   normalized: string
+  url?: string
+}
+
+type BulkApiCheck = ApiCheckResponse & {
+  platform: PlatformId
+  username: string
+}
+
+type BulkApiResponse = {
+  results: BulkApiCheck[]
+  durationMs: number
 }
 
 type UsernameRow = {
@@ -28,14 +41,21 @@ type UsernameRow = {
   key: string
 }
 
+type CheckTask = {
+  username: UsernameRow
+  platform: PlatformId
+}
+
 const DEFAULT_NAMES = ['pixelpilot', 'nova_rift', 'shadow.core', 'builder_21'].join('\n')
 
 function App() {
   const [input, setInput] = useState(DEFAULT_NAMES)
   const [selectedPlatforms, setSelectedPlatforms] = useState<PlatformId[]>([...PLATFORM_IDS])
-  const [delayMs, setDelayMs] = useState(650)
+  const [concurrency, setConcurrency] = useState(48)
+  const [timeoutMs, setTimeoutMs] = useState(3200)
   const [results, setResults] = useState<Record<string, CheckCell>>({})
   const [isChecking, setIsChecking] = useState(false)
+  const [lastRunMs, setLastRunMs] = useState<number>()
 
   const usernames = useMemo(() => parseUsernames(input), [input])
   const selectedSet = useMemo(() => new Set(selectedPlatforms), [selectedPlatforms])
@@ -70,6 +90,7 @@ function App() {
     }
 
     const nextResults: Record<string, CheckCell> = {}
+    const validTasks: CheckTask[] = []
 
     for (const username of usernames) {
       for (const platform of visiblePlatforms) {
@@ -81,46 +102,56 @@ function App() {
             detail: validation.reason ?? 'Invalid username',
             normalized: validation.normalized,
             suggestions: [],
+            url: getProfileUrl(platform.id, validation.normalized),
+          }
+        } else {
+          validTasks.push({ username, platform: platform.id })
+          nextResults[cellKey(username, platform.id)] = {
+            status: 'checking',
+            detail: validation.note ?? 'Queued',
+            normalized: validation.normalized,
+            suggestions: [],
+            url: getProfileUrl(platform.id, validation.normalized),
           }
         }
       }
     }
 
     setResults(nextResults)
+    setLastRunMs(undefined)
+
+    if (!validTasks.length) {
+      return
+    }
+
     setIsChecking(true)
 
     try {
-      for (const username of usernames) {
-        for (const platform of visiblePlatforms) {
-          const key = cellKey(username, platform.id)
-          const validation = validateUsername(platform.id, username.original)
+      const startedAt = performance.now()
+      const checked = await checkBulk(validTasks, concurrency, timeoutMs)
 
-          if (!validation.valid) {
-            continue
-          }
+      setResults((current) => ({ ...current, ...checked }))
+      setLastRunMs(performance.now() - startedAt)
+    } catch {
+      const failedResults = Object.fromEntries(
+        validTasks.map(({ username, platform }) => {
+          const validation = validateUsername(platform, username.original)
 
-          setResults((current) => ({
-            ...current,
-            [key]: {
-              status: 'checking',
-              detail: validation.note ?? 'Checking',
+          return [
+            cellKey(username, platform),
+            {
+              status: 'uncertain',
+              detail: 'Bulk check API unavailable',
               normalized: validation.normalized,
               suggestions: [],
-            },
-          }))
+              url: getProfileUrl(platform, validation.normalized),
+              checkedAt: new Date().toISOString(),
+            } satisfies CheckCell,
+          ]
+        }),
+      )
 
-          const checked = await checkUsername(platform.id, username.original)
-
-          setResults((current) => ({
-            ...current,
-            [key]: checked,
-          }))
-
-          if (delayMs > 0) {
-            await wait(delayMs)
-          }
-        }
-      }
+      setResults((current) => ({ ...current, ...failedResults }))
     } finally {
       setIsChecking(false)
     }
@@ -209,25 +240,43 @@ function App() {
             </div>
           </div>
 
-          <label className="delay-control" htmlFor="delay">
-            <span>
-              <strong>Delay</strong>
-              <small>{delayMs}ms between checks</small>
-            </span>
-            <input
-              id="delay"
-              type="range"
-              min="250"
-              max="2500"
-              step="250"
-              value={delayMs}
-              onChange={(event) => setDelayMs(Number(event.target.value))}
-            />
-          </label>
+          <div className="speed-controls">
+            <label className="range-control" htmlFor="concurrency">
+              <span>
+                <strong>Parallel workers</strong>
+                <small>{concurrency} checks at once</small>
+              </span>
+              <input
+                id="concurrency"
+                type="range"
+                min="4"
+                max="96"
+                step="4"
+                value={concurrency}
+                onChange={(event) => setConcurrency(Number(event.target.value))}
+              />
+            </label>
+
+            <label className="range-control" htmlFor="timeout">
+              <span>
+                <strong>Timeout</strong>
+                <small>{timeoutMs}ms per probe</small>
+              </span>
+              <input
+                id="timeout"
+                type="range"
+                min="1200"
+                max="10000"
+                step="200"
+                value={timeoutMs}
+                onChange={(event) => setTimeoutMs(Number(event.target.value))}
+              />
+            </label>
+          </div>
 
           <div className="actions">
             <button className="primary-action" type="button" onClick={runChecks} disabled={isChecking}>
-              {isChecking ? 'Checking...' : 'Check names'}
+              {isChecking ? 'Scanning...' : 'Bulk scan'}
             </button>
             <button type="button" onClick={exportCsv} disabled={!Object.keys(results).length}>
               Export CSV
@@ -242,7 +291,7 @@ function App() {
       <section className="preflight" aria-label="Preflight validation">
         <span>{readiness.total} platform checks queued</span>
         <span>{readiness.adjusted} normalized automatically</span>
-        <span>{isChecking ? `${counts.checking} running now` : 'Ready'}</span>
+        <span>{isChecking ? `${counts.checking} running now` : formatRunState(lastRunMs)}</span>
       </section>
 
       <section className="table-shell" aria-label="Availability results">
@@ -297,60 +346,37 @@ function App() {
   )
 }
 
-async function checkUsername(platform: PlatformId, username: string): Promise<CheckCell> {
-  try {
-    const response = await fetch('/api/check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform, username }),
-    })
-
-    if (!response.ok) {
-      throw new Error('Check failed')
-    }
-
-    const data = (await response.json()) as ApiCheckResponse
-
-    return {
-      status: data.status,
-      detail: data.detail,
-      normalized: data.normalized,
-      suggestions: data.status === 'taken' ? makeSuggestions(platform, data.normalized) : [],
-      checkedAt: new Date().toISOString(),
-    }
-  } catch {
-    const validation = validateUsername(platform, username)
-
-    return {
-      status: 'uncertain',
-      detail: 'Local check API unavailable',
-      normalized: validation.normalized,
-      suggestions: [],
-      checkedAt: new Date().toISOString(),
-    }
-  }
-}
-
 function renderCell(username: UsernameRow, platform: PlatformId, results: Record<string, CheckCell>) {
   const result = results[cellKey(username, platform)]
   const validation = validateUsername(platform, username.original)
 
   if (!result) {
     if (!validation.valid) {
-      return <StatusBadge status="invalid" detail={validation.reason ?? 'Invalid username'} />
+      return (
+        <StatusBadge
+          status="invalid"
+          detail={validation.reason ?? 'Invalid username'}
+          url={getProfileUrl(platform, validation.normalized)}
+        />
+      )
     }
 
-    return <StatusBadge status="idle" detail={validation.note ?? 'Ready'} />
+    return <StatusBadge status="idle" detail={validation.note ?? 'Ready'} url={getProfileUrl(platform, validation.normalized)} />
   }
 
-  return <StatusBadge status={result.status} detail={result.detail} />
+  return <StatusBadge status={result.status} detail={result.detail} url={result.url} />
 }
 
-function StatusBadge({ status, detail }: { status: Status; detail: string }) {
+function StatusBadge({ status, detail, url }: { status: Status; detail: string; url?: string }) {
   return (
     <span className={`status-badge ${status}`}>
       <strong>{status}</strong>
       <small>{detail}</small>
+      {url ? (
+        <a href={url} target="_blank" rel="noreferrer">
+          Open
+        </a>
+      ) : null}
     </span>
   )
 }
@@ -379,10 +405,6 @@ function cellKey(username: UsernameRow, platform: PlatformId) {
   return `${username.key}:${platform}`
 }
 
-function wait(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
-
 function collectRowSuggestions(
   username: UsernameRow,
   platforms: PlatformId[],
@@ -394,7 +416,7 @@ function collectRowSuggestions(
 }
 
 function buildCsv(usernames: UsernameRow[], platforms: PlatformId[], results: Record<string, CheckCell>) {
-  const headers = ['username', 'platform', 'status', 'detail', 'normalized', 'suggestions', 'checked_at']
+  const headers = ['username', 'platform', 'status', 'detail', 'normalized', 'url', 'suggestions', 'checked_at']
   const rows = usernames.flatMap((username) =>
     platforms.map((platform) => {
       const validation = validateUsername(platform, username.original)
@@ -404,6 +426,7 @@ function buildCsv(usernames: UsernameRow[], platforms: PlatformId[], results: Re
           status: validation.valid ? 'idle' : 'invalid',
           detail: validation.note ?? validation.reason ?? 'Not checked',
           normalized: validation.normalized,
+          url: getProfileUrl(platform, validation.normalized),
           suggestions: [],
         } satisfies CheckCell)
 
@@ -413,6 +436,7 @@ function buildCsv(usernames: UsernameRow[], platforms: PlatformId[], results: Re
         result.status,
         result.detail,
         result.normalized,
+        result.url ?? '',
         result.suggestions.join(' '),
         result.checkedAt ?? '',
       ]
@@ -424,6 +448,53 @@ function buildCsv(usernames: UsernameRow[], platforms: PlatformId[], results: Re
 
 function csvEscape(value: string) {
   return `"${value.replace(/"/g, '""')}"`
+}
+
+async function checkBulk(tasks: CheckTask[], concurrency: number, timeoutMs: number) {
+  const response = await fetch('/api/check-bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      concurrency,
+      timeoutMs,
+      checks: tasks.map(({ username, platform }) => ({
+        platform,
+        username: username.original,
+      })),
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error('Bulk check failed')
+  }
+
+  const data = (await response.json()) as BulkApiResponse
+
+  return Object.fromEntries(
+    data.results.map((result) => [
+      cellKeyFromValues(result.username, result.platform),
+      {
+        status: result.status,
+        detail: result.detail,
+        normalized: result.normalized,
+        suggestions: result.status === 'taken' ? makeSuggestions(result.platform, result.normalized) : [],
+        url: result.url ?? getProfileUrl(result.platform, result.normalized),
+        checkedAt: new Date().toISOString(),
+      } satisfies CheckCell,
+    ]),
+  )
+}
+
+function cellKeyFromValues(username: string, platform: PlatformId) {
+  return `${username.trim().replace(/^@/, '').toLowerCase()}:${platform}`
+}
+
+function formatRunState(durationMs?: number) {
+  if (!durationMs) {
+    return 'Ready'
+  }
+
+  return `Last run ${Math.max(0.1, durationMs / 1000).toFixed(1)}s`
 }
 
 export default App

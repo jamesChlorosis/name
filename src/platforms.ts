@@ -1,4 +1,4 @@
-export type PlatformId = 'instagram' | 'discord' | 'minecraft' | 'roblox'
+export type PlatformId = 'instagram' | 'discord' | 'minecraft' | 'roblox' | 'medium' | 'linkedin'
 
 export type Status = 'idle' | 'checking' | 'available' | 'taken' | 'invalid' | 'uncertain'
 
@@ -41,18 +41,108 @@ export const PLATFORMS: Platform[] = [
     shortLabel: 'RB',
     ruleSummary: '3-20 letters, numbers, with up to one middle underscore',
   },
+  {
+    id: 'medium',
+    label: 'Medium',
+    shortLabel: 'MD',
+    ruleSummary: '3-30 letters, numbers, or underscores',
+  },
+  {
+    id: 'linkedin',
+    label: 'LinkedIn URL',
+    shortLabel: 'IN',
+    ruleSummary: '3-100 letters, numbers, or hyphens',
+  },
 ]
 
 export const PLATFORM_IDS = PLATFORMS.map((platform) => platform.id)
 
+const MEDIUM_RESERVED_HANDLES = new Set([
+  'about',
+  'account',
+  'accounts',
+  'admin',
+  'api',
+  'app',
+  'assets',
+  'billing',
+  'blog',
+  'blogs',
+  'cdn',
+  'careers',
+  'creators',
+  'dashboard',
+  'drafts',
+  'email',
+  'feed',
+  'feeds',
+  'help',
+  'home',
+  'jobs',
+  'legal',
+  'login',
+  'logout',
+  'mail',
+  'me',
+  'medium',
+  'membership',
+  'new',
+  'notifications',
+  'partner',
+  'partners',
+  'policy',
+  'press',
+  'privacy',
+  'publications',
+  'search',
+  'settings',
+  'signin',
+  'signup',
+  'staff',
+  'status',
+  'stories',
+  'support',
+  'tag',
+  'tags',
+  'terms',
+  'topics',
+  'trust',
+  'user',
+  'users',
+  'write',
+  'www',
+])
+
 export function normalizeUsername(platform: PlatformId, username: string) {
   const trimmed = username.trim().replace(/^@/, '')
 
-  if (platform === 'discord' || platform === 'instagram') {
+  if (platform === 'discord' || platform === 'instagram' || platform === 'medium' || platform === 'linkedin') {
     return trimmed.toLowerCase()
   }
 
   return trimmed
+}
+
+export function getProfileUrl(platform: PlatformId, username: string) {
+  const normalized = normalizeUsername(platform, username)
+
+  if (!normalized) {
+    return undefined
+  }
+
+  if (platform === 'instagram') {
+    return `https://www.instagram.com/${normalized}/`
+  }
+
+  if (platform === 'medium') {
+    return `https://medium.com/@${normalized}`
+  }
+
+  if (platform === 'linkedin') {
+    return `https://www.linkedin.com/in/${normalized}/`
+  }
+
+  return undefined
 }
 
 export function validateUsername(platform: PlatformId, username: string): ValidationResult {
@@ -116,6 +206,39 @@ export function validateUsername(platform: PlatformId, username: string): Valida
     }
   }
 
+  if (platform === 'medium') {
+    if (normalized.length < 3 || normalized.length > 30) {
+      return { valid: false, normalized, reason: 'Must be 3-30 characters to claim' }
+    }
+    if (MEDIUM_RESERVED_HANDLES.has(normalized)) {
+      return { valid: false, normalized, reason: 'Reserved by Medium' }
+    }
+    if (!/^[a-z0-9_]+$/.test(normalized)) {
+      return { valid: false, normalized, reason: 'Only letters, numbers, and underscores' }
+    }
+    if (normalized.startsWith('_') || normalized.endsWith('_')) {
+      return { valid: false, normalized, reason: 'Underscore cannot be first or last' }
+    }
+    if (normalized.includes('__')) {
+      return { valid: false, normalized, reason: 'No repeated underscores' }
+    }
+  }
+
+  if (platform === 'linkedin') {
+    if (normalized.length < 3 || normalized.length > 100) {
+      return { valid: false, normalized, reason: 'Must be 3-100 characters' }
+    }
+    if (!/^[a-z0-9-]+$/.test(normalized)) {
+      return { valid: false, normalized, reason: 'Only letters, numbers, and hyphens' }
+    }
+    if (normalized.startsWith('-') || normalized.endsWith('-')) {
+      return { valid: false, normalized, reason: 'Hyphen cannot be first or last' }
+    }
+    if (normalized.includes('--')) {
+      return { valid: false, normalized, reason: 'No repeated hyphens' }
+    }
+  }
+
   if (raw !== normalized) {
     return { valid: true, normalized, note: `Checks as ${normalized}` }
   }
@@ -162,6 +285,8 @@ function fitSuggestion(platform: PlatformId, candidate: string) {
     discord: 32,
     minecraft: 16,
     roblox: 20,
+    medium: 30,
+    linkedin: 100,
   }
 
   let fitted = normalizeUsername(platform, candidate).slice(0, maxLengthByPlatform[platform])
@@ -179,5 +304,13 @@ function fitSuggestion(platform: PlatformId, candidate: string) {
     fitted = fitted.replace(/\./g, '').slice(0, 16)
   }
 
-  return fitted.replace(/[._]+$/, '').replace(/^[._]+/, '')
+  if (platform === 'medium') {
+    fitted = fitted.replace(/[^a-z0-9_]/g, '').slice(0, 30)
+  }
+
+  if (platform === 'linkedin') {
+    fitted = fitted.replace(/[._]/g, '-').replace(/-+/g, '-').slice(0, 100)
+  }
+
+  return fitted.replace(/[._-]+$/, '').replace(/^[._-]+/, '')
 }

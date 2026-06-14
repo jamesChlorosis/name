@@ -156,7 +156,7 @@ input:focus-visible {
 
 .platform-toggles {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 10px;
   margin-top: 10px;
 }
@@ -205,14 +205,14 @@ input:focus-visible {
 }
 
 .platform-toggle strong,
-.delay-control strong {
+.range-control strong {
   display: block;
   color: var(--ink);
   font-size: 14px;
 }
 
 .platform-toggle small,
-.delay-control small,
+.range-control small,
 .status-badge small {
   display: block;
   color: var(--muted);
@@ -220,7 +220,12 @@ input:focus-visible {
   line-height: 1.25;
 }
 
-.delay-control {
+.speed-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.range-control {
   display: grid;
   grid-template-columns: 150px 1fr;
   gap: 14px;
@@ -341,6 +346,16 @@ tbody th {
   text-transform: capitalize;
 }
 
+.status-badge a {
+  width: fit-content;
+  border-bottom: 1px solid currentColor;
+  color: currentColor;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
 .status-badge.checking {
   border-color: rgba(46, 125, 167, 0.28);
   background: #eef8fb;
@@ -401,7 +416,7 @@ tbody th {
   }
 
   .platform-toggles,
-  .delay-control {
+  .range-control {
     grid-template-columns: 1fr;
   }
 
